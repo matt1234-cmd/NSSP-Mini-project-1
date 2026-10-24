@@ -257,3 +257,189 @@ plt.show()
 # `present_story` has the highest VIF (12.6): it covers most of each story block, so it is close to a combination
 # of the other regressors. The short story events (`question_story`, 4 × 1.2 s) carry little signal, hence low
 # power for the question-vs-response contrasts of the theoretical part.
+
+# %% [markdown]
+# ## 3c. GLM and statistical maps of the task regressors
+#
+# **Level.** First level (single subject, single run): there is only one subject and one run, so there is
+# no second level to run. The GLM is fitted voxel by voxel on the preprocessed run of part 1-2, with the
+# design matrices of 3a passed directly (same regressors, same drifts, same motion confounds).
+#
+# Settings, following lab 5:
+# - **mask**: the functional brain mask of part 1-2 (BET on the mean fMRI);
+# - **no extra smoothing**: the run is already smoothed (FWHM 6 mm, part 1-2);
+# - **signal scaling**: each voxel is expressed in % of its mean, so the betas are in % signal change;
+# - **noise model**: AR(1), because the fMRI noise is autocorrelated at TR = 0.72 s (OLS would underestimate
+#   the variance and inflate the statistics);
+# - **thresholding**: FDR q < 0.05 and clusters of at least 10 voxels (`threshold_stats_img`, as in lab 5).
+#   The maps are z-scores, two-sided.
+
+# %%
+from nilearn.glm.first_level import FirstLevelModel
+from nilearn.glm import threshold_stats_img
+from nilearn.reporting import get_clusters_table
+from nilearn import plotting
+
+func_mask = op.join(func_dir, "func_mean_brain_mask.nii.gz")              # part 1-2
+anat_mni = op.join(out_dir, "anat", "T1w_brain_MNI_SyN.nii.gz")          # part 1-1, background of the maps
+assert op.exists(func_mask) and op.exists(anat_mni), "run parts 1-1 and 1-2 of Project_notebook.ipynb first"
+
+FDR_ALPHA = 0.05
+CLUSTER_SIZE = 10                                   # voxels
+Z_CUTS = [-24, -12, -4, 4, 14, 26, 40, 52]          # axial slices (MNI z, mm)
+Z_VMAX = 10                                         # common colour scale for all the maps
+
+
+def fit_glm(design):
+    glm = FirstLevelModel(t_r=t_r, mask_img=func_mask, smoothing_fwhm=None, noise_model="ar1",
+                          signal_scaling=0, minimize_memory=True)
+    return glm.fit(func_img_path, design_matrices=design)
+
+
+def contrast_vector(design, weights):
+    """Contrast vector over all the columns of the design matrix, from a {column: weight} dict."""
+    vec = np.zeros(design.shape[1])
+    for col, w in weights.items():
+        vec[design.columns.get_loc(col)] = w
+    return vec
+
+
+def threshold(z_map, control="fdr", alpha=FDR_ALPHA):
+    """FDR q < 0.05 (two-sided) + cluster extent, as in lab 5. Returns the thresholded map and the z threshold."""
+    return threshold_stats_img(z_map, mask_img=func_mask, alpha=alpha, height_control=control,
+                               cluster_threshold=CLUSTER_SIZE, two_sided=True)
+
+
+def plot_map(z_thr, z_thr_value, title, axes, vmax=Z_VMAX):
+    display = plotting.plot_stat_map(z_thr, bg_img=anat_mni, display_mode="z", cut_coords=Z_CUTS, axes=axes,
+                                     threshold=z_thr_value, vmax=vmax, cmap="RdBu_r", black_bg=False,
+                                     annotate=True, draw_cross=False)
+    display.title(title, size=9, color="black", bgcolor="white")
+    return display
+
+
+glm_block = fit_glm(dm_block)
+glm_event = fit_glm(dm_event)
+
+# %%
+# Statistical map of each task regressor (each regressor vs the implicit baseline)
+z_maps = {}
+for name, glm, design, conditions in [("block", glm_block, dm_block, BLOCK_CONDITIONS),
+                                      ("event", glm_event, dm_event, EVENT_CONDITIONS)]:
+    for cond in conditions:
+        z = glm.compute_contrast(contrast_vector(design, {cond: 1}), output_type="z_score")
+        z.to_filename(op.join(glm_dir, f"zmap_{name}_{cond}.nii.gz"))
+        z_maps[(name, cond)] = z
+
+summary = []
+for (name, cond), z in z_maps.items():
+    z_thr, thr = threshold(z)
+    data = z_thr.get_fdata()
+    summary.append({"model": name, "regressor": cond, "z threshold": round(thr, 2),
+                    "voxels z>0": int((data > 0).sum()), "voxels z<0": int((data < 0).sum()),
+                    "max z": round(float(z.get_fdata().max()), 1), "min z": round(float(z.get_fdata().min()), 1)})
+summary = pd.DataFrame(summary)
+summary.to_csv(op.join(glm_dir, "regressor_maps_summary.csv"), index=False)
+print(summary.to_string(index=False))
+
+# %%
+# Figure: block design, two rows per task regressor: thresholded map, then the unthresholded map
+# (the thresholded maps are almost empty, see the comments; the raw map shows the spatial pattern behind them)
+fig, axs = plt.subplots(2 * len(BLOCK_CONDITIONS), 1, figsize=(14, 2.4 * 2 * len(BLOCK_CONDITIONS)))
+for k, cond in enumerate(BLOCK_CONDITIONS):
+    z_thr, thr = threshold(z_maps[("block", cond)])
+    plot_map(z_thr, thr, f"{cond} (vs implicit baseline), z, FDR q < {FDR_ALPHA}, |z| > {thr:.2f}", axs[2 * k])
+    plot_map(z_maps[("block", cond)], 0, f"{cond}, unthresholded z", axs[2 * k + 1], vmax=5)
+fig.savefig(op.join(fig_dir, "7c_regressor_maps_block.png"), dpi=FIG_DPI, bbox_inches="tight")
+plt.show()
+
+# Figure (appendix): event design, one row per sub-event regressor
+fig, axs = plt.subplots(len(EVENT_CONDITIONS), 1, figsize=(14, 2.4 * len(EVENT_CONDITIONS)))
+for ax, cond in zip(axs, EVENT_CONDITIONS):
+    z_thr, thr = threshold(z_maps[("event", cond)])
+    plot_map(z_thr, thr, f"{cond}, z, FDR q < {FDR_ALPHA}, |z| > {thr:.2f}", ax)
+fig.savefig(op.join(fig_dir, "annex_regressor_maps_event.png"), dpi=FIG_DPI, bbox_inches="tight")
+plt.show()
+
+# %% [markdown]
+# ## 3d. Story vs math contrast
+#
+# Contrast vector on the block design (columns in the order of the design matrix):
+# +1 on `story`, -1 on `math`, 0 on the motion, drift and constant columns. It is printed below.
+# Positive z = more active during the stories (semantic processing), negative z = more active during math
+# (numerical processing). The math - story map is the same map with the sign flipped.
+
+# %%
+c_story_math = contrast_vector(dm_block, {"story": 1, "math": -1})
+print("Contrast vector story - math:")
+print(pd.Series(c_story_math, index=dm_block.columns).astype(int).to_string())
+
+z_sm = glm_block.compute_contrast(c_story_math, output_type="z_score")
+z_sm.to_filename(op.join(glm_dir, "zmap_story_minus_math.nii.gz"))
+z_sm_thr, thr_sm = threshold(z_sm)
+z_sm_thr.to_filename(op.join(glm_dir, "zmap_story_minus_math_thr.nii.gz"))
+d = z_sm_thr.get_fdata()
+print(f"\nFDR threshold |z| > {thr_sm:.2f}:  story > math {(d > 0).sum()} voxels,  math > story {(d < 0).sum()} voxels")
+
+clusters = get_clusters_table(z_sm, stat_threshold=thr_sm, cluster_threshold=CLUSTER_SIZE, two_sided=True)
+clusters.to_csv(op.join(glm_dir, "clusters_story_minus_math.csv"), index=False)
+print(clusters.head(25).to_string(index=False))
+
+# %%
+# Stricter control for the figure: Bonferroni (family-wise error) at 0.05, which keeps only the core regions
+z_sm_bonf, thr_bonf = threshold(z_sm, control="bonferroni", alpha=0.05)
+d = z_sm_bonf.get_fdata()
+print(f"Bonferroni threshold |z| > {thr_bonf:.2f}:  story > math {(d > 0).sum()} voxels,  math > story {(d < 0).sum()} voxels")
+
+# Figure: story - math contrast, FDR and Bonferroni, axial slices + glass brain (Bonferroni)
+fig = plt.figure(figsize=(14, 8.5))
+ax_fdr = fig.add_axes([0, 0.68, 1, 0.32])
+ax_bonf = fig.add_axes([0, 0.35, 1, 0.32])
+ax_glass = fig.add_axes([0.15, 0, 0.7, 0.33])
+plot_map(z_sm_thr, thr_sm, f"story - math, FDR q < {FDR_ALPHA}, |z| > {thr_sm:.2f}   (red: story > math, blue: math > story)", ax_fdr)
+plot_map(z_sm_bonf, thr_bonf, f"story - math, Bonferroni p < 0.05, |z| > {thr_bonf:.2f}", ax_bonf)
+plotting.plot_glass_brain(z_sm_bonf, threshold=thr_bonf, vmax=Z_VMAX, cmap="RdBu_r", plot_abs=False,
+                          colorbar=True, display_mode="lzry", axes=ax_glass)
+fig.savefig(op.join(fig_dir, "7d_contrast_story_minus_math.png"), dpi=FIG_DPI, bbox_inches="tight")
+plt.show()
+
+# %% [markdown]
+# ### Comments on 3c
+#
+# **Block design (`7c_regressor_maps_block.png`).** As predicted in 3b, the maps of `story` alone and `math`
+# alone are almost empty after FDR correction (story: 145 voxels, math: 1137 voxels, all negative), and the
+# unthresholded maps look like smooth noise. Each regressor is tested against the implicit baseline, i.e. the
+# ~12 s of the run that are covered by no block, and `story + math` is almost equal to the constant. The model
+# therefore cannot tell "story" from "constant", the betas have a ~10× inflated variance, and their sign is
+# driven by how the intercept absorbs the mean signal, not by the task. These maps are not interpretable on their
+# own; the information of the block design is in the difference between the two regressors (3d).
+#
+# **Event design (`annex_regressor_maps_event.png`).** The short sub-events vary independently of the constant,
+# so their maps are interpretable and match the expected functional anatomy:
+# - `cue`: right (and left) superior temporal gyrus, i.e. auditory cortex, for the short auditory cue;
+# - `question_math`: left precentral gyrus (hand motor cortex), consistent with the right-hand button press that
+#   follows the question (the HRF blurs question and response together, r = 0.47 in 3b);
+# - `present_math`: bilateral intraparietal and precentral regions (positive) with medial prefrontal decreases
+#   (negative), the classic arithmetic vs default-mode pattern;
+# - `question_story`: bilateral lateral temporal cortex, the story question being a spoken sentence;
+# - `present_story`: nothing survives (VIF 12.6, it spans most of each story block and is collinear with the rest).
+
+# %% [markdown]
+# ### Comments on 3d
+#
+# Contrast vector (column order of the block design): `[-1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]` for
+# `[math, story, rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, drift_1, drift_2, drift_3, drift_4, constant]`.
+#
+# Unlike the single-regressor maps, the contrast is very strong (peak |z| ≈ 10). With FDR q < 0.05 the threshold
+# drops to |z| > 2.42 because so many voxels are significant (~72 000 voxels, about a third of the mask), and the
+# map becomes diffuse. The Bonferroni map (|z| > 5.19, ~12 000 voxels) shows the core regions more clearly:
+# - **story > math (red)**: medial prefrontal cortex and left superior frontal gyrus (peaks at (-4, 60, 28) and
+#   (-20, 40, 50)), bilateral anterior temporal lobes / superior temporal sulcus (peak at (-54, -4, -10)),
+#   angular gyrus, posterior cingulate / precuneus, and the right posterior cerebellum (24, -82, -44);
+# - **math > story (blue)**: bilateral intraparietal sulcus (peaks at (40, -40, 38), (54, -38, 46),
+#   (-52, -46, 56)), right precentral / middle frontal gyrus (46, 4, 20) and (36, 6, 64), right lateral prefrontal
+#   cortex (42, 42, 22) and the inferior temporal / occipito-temporal cortex.
+#
+# These are respectively the semantic / default-mode regions and the fronto-parietal regions of numerical
+# processing reported by Binder et al. (2011); their attribution to functional networks is done in 3e.
+# Peak coordinates and cluster sizes: `data/derivatives/glm/clusters_story_minus_math.csv`.
