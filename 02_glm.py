@@ -430,9 +430,11 @@ plt.show()
 # Contrast vector (column order of the block design): `[-1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]` for
 # `[math, story, rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, drift_1, drift_2, drift_3, drift_4, constant]`.
 #
-# Unlike the single-regressor maps, the contrast is very strong (peak |z| ≈ 10). With FDR q < 0.05 the threshold
-# drops to |z| > 2.42 because so many voxels are significant (~72 000 voxels, about a third of the mask), and the
-# map becomes diffuse. The Bonferroni map (|z| > 5.19, ~12 000 voxels) shows the core regions more clearly:
+# **Main map: FDR q < 0.05** (top row of `7d_contrast_story_minus_math.png`, the correction used in lab 5).
+# Unlike the single-regressor maps, the contrast is very strong (peak |z| ≈ 10). Because so many voxels are
+# significant (~72 000, about a third of the mask), the FDR threshold drops to |z| > 2.42 and the map is extended.
+# The Bonferroni map (|z| > 5.19, ~12 000 voxels) is shown below it as a complement: it controls the family-wise
+# error and keeps only the core of each region, which makes the regions easier to name:
 # - **story > math (red)**: medial prefrontal cortex and left superior frontal gyrus (peaks at (-4, 60, 28) and
 #   (-20, 40, 50)), bilateral anterior temporal lobes / superior temporal sulcus (peak at (-54, -4, -10)),
 #   angular gyrus, posterior cingulate / precuneus, and the right posterior cerebellum (24, -82, -44);
@@ -443,3 +445,331 @@ plt.show()
 # These are respectively the semantic / default-mode regions and the fronto-parietal regions of numerical
 # processing reported by Binder et al. (2011); their attribution to functional networks is done in 3e.
 # Peak coordinates and cluster sizes: `data/derivatives/glm/clusters_story_minus_math.csv`.
+
+# %% [markdown]
+# ## 3e. Regions and functional networks
+#
+# The story - math map (FDR, 3d) is compared with the 7 resting-state networks of Yeo et al. (2011), the reference
+# of the project. We use the volumetric version of the atlas distributed by the authors (CBIG), on the FSL MNI152
+# 2 mm grid, i.e. the grid of our fMRI: no resampling is needed. The atlas is cortical only; subcortical and
+# cerebellar voxels are counted as "outside Yeo". The atlas covers a thin cortical ribbon, while our data are
+# smoothed with a 6 mm kernel, so many cortical activations fall just next to it; each brain voxel within 4 mm
+# (2 voxels) of the atlas is therefore given the network of its nearest atlas voxel. Anatomical names of the peaks come from the Harvard-Oxford atlas
+# (FSL, as in lab 1).
+#
+# Two complementary measures per network:
+# - **coverage**: % of the network's voxels where story > math (or math > story), i.e. how much of the network is
+#   engaged by each task;
+# - **composition**: % of all the story > math (or math > story) voxels that fall in this network.
+
+# %%
+import urllib.request
+from nilearn import datasets, image
+
+atlas_dir = op.join(out_dir, "atlases")
+os.makedirs(atlas_dir, exist_ok=True)
+YEO_URL = ("https://raw.githubusercontent.com/ThomasYeoLab/CBIG/master/stable_projects/brain_parcellation/"
+           "Yeo2011_fcMRI_clustering/1000subjects_reference/Yeo_JNeurophysiol11_SplitLabels/MNI152/")
+YEO_FILE = "Yeo2011_7Networks_N1000.split_components.FSL_MNI152_2mm.nii.gz"
+YEO_LUT = "7Networks_ColorLUT_freeview.txt"
+for f in (YEO_FILE, YEO_LUT):
+    if not op.exists(op.join(atlas_dir, f)):
+        urllib.request.urlretrieve(YEO_URL + f, op.join(atlas_dir, f))
+
+# The split atlas has 51 components (e.g. "7Networks_LH_Default_Temp"): grouped into the 7 networks
+NETWORKS = {"Vis": "Visual", "SomMot": "Somatomotor", "DorsAttn": "Dorsal attention",
+            "SalVentAttn": "Ventral attention / salience", "Limbic": "Limbic", "Cont": "Frontoparietal control",
+            "Default": "Default mode"}
+NETWORK_COLORS = {"Visual": "#781286", "Somatomotor": "#4682b4", "Dorsal attention": "#00760e",
+                  "Ventral attention / salience": "#c43afa", "Limbic": "#b8c96a",     # Yeo's colours (limbic darkened)
+                  "Frontoparietal control": "#e69422", "Default mode": "#cd3e4e"}
+lut = pd.read_csv(op.join(atlas_dir, YEO_LUT), sep=r"\s+", header=None, usecols=[0, 1], names=["index", "name"])
+lut = lut[lut["index"] > 0]
+lut["network"] = lut["name"].str.split("_").str[2].map(NETWORKS)
+
+yeo_img = nib.load(op.join(atlas_dir, YEO_FILE))
+z_img = nib.load(op.join(glm_dir, "zmap_story_minus_math.nii.gz"))
+assert np.allclose(yeo_img.affine, z_img.affine) and yeo_img.shape[:3] == z_img.shape[:3], "atlas not on the fMRI grid"
+yeo_split = np.squeeze(yeo_img.get_fdata()).astype(int)
+from scipy import ndimage
+
+mask_data = nib.load(func_mask).get_fdata() > 0
+YEO_DILATION = 2                                                        # voxels (4 mm)
+dist, (ii, jj, kk) = ndimage.distance_transform_edt(yeo_split == 0, return_indices=True)
+yeo_split = np.where(mask_data & (dist <= YEO_DILATION), yeo_split[ii, jj, kk], yeo_split)
+yeo_net = np.full(yeo_split.shape, "", dtype=object)                    # network name of each voxel
+for _, row in lut.iterrows():
+    yeo_net[yeo_split == row["index"]] = row["network"]
+z_data = z_img.get_fdata()
+z_fdr = z_sm_thr.get_fdata()
+story_vox, math_vox = (z_fdr > 0) & mask_data, (z_fdr < 0) & mask_data
+
+rows = []
+for net in NETWORK_COLORS:
+    in_net = (yeo_net == net) & mask_data
+    rows.append({"network": net, "voxels": int(in_net.sum()),
+                 "coverage story>math (%)": 100 * (story_vox & in_net).sum() / in_net.sum(),
+                 "coverage math>story (%)": 100 * (math_vox & in_net).sum() / in_net.sum(),
+                 "mean z": z_data[in_net].mean(),
+                 "composition story>math (%)": 100 * (story_vox & in_net).sum() / story_vox.sum(),
+                 "composition math>story (%)": 100 * (math_vox & in_net).sum() / math_vox.sum()})
+outside = (yeo_net == "") & mask_data
+rows.append({"network": "outside Yeo (subcortex, cerebellum, WM)", "voxels": int(outside.sum()),
+             "coverage story>math (%)": 100 * (story_vox & outside).sum() / outside.sum(),
+             "coverage math>story (%)": 100 * (math_vox & outside).sum() / outside.sum(),
+             "mean z": z_data[outside].mean(),
+             "composition story>math (%)": 100 * (story_vox & outside).sum() / story_vox.sum(),
+             "composition math>story (%)": 100 * (math_vox & outside).sum() / math_vox.sum()})
+network_table = pd.DataFrame(rows).round(1)
+network_table.to_csv(op.join(glm_dir, "networks_story_minus_math.csv"), index=False)
+print(network_table.to_string(index=False))
+
+# %%
+# Peaks of the story - math map, labelled with Harvard-Oxford (anatomy) and Yeo (network).
+# The peaks are taken on the Bonferroni map: at the FDR threshold most of the cortex merges into a few huge
+# clusters, so their peaks would not separate the regions.
+ho_cort = datasets.fetch_atlas_harvard_oxford("cort-maxprob-thr25-2mm")
+ho_sub = datasets.fetch_atlas_harvard_oxford("sub-maxprob-thr25-2mm")
+ho_cort_data = np.squeeze(image.resample_to_img(ho_cort.maps, z_img, interpolation="nearest").get_fdata()).astype(int)
+ho_sub_data = np.squeeze(image.resample_to_img(ho_sub.maps, z_img, interpolation="nearest").get_fdata()).astype(int)
+inv_affine = np.linalg.inv(z_img.affine)
+
+
+def label_peak(x, y, z):
+    i, j, k = np.round(inv_affine @ [x, y, z, 1])[:3].astype(int)
+    side = "L" if x < 0 else "R"
+    if ho_cort_data[i, j, k] > 0:
+        anat = f"{side} {ho_cort.labels[ho_cort_data[i, j, k]]}"
+    elif ho_sub_data[i, j, k] > 0:
+        anat = ho_sub.labels[ho_sub_data[i, j, k]]
+    else:
+        anat = "cerebellum" if z < -20 and y < -40 else "unlabelled"
+    return anat, yeo_net[i, j, k] or "outside Yeo"
+
+
+peaks = get_clusters_table(z_sm, stat_threshold=thr_bonf, cluster_threshold=CLUSTER_SIZE, two_sided=True,
+                           min_distance=20)
+peaks = peaks.rename(columns={"Peak Stat": "z", "Cluster Size (mm3)": "cluster (mm3)"})
+peaks[["anatomy (Harvard-Oxford)", "network (Yeo)"]] = [label_peak(*p) for p in peaks[["X", "Y", "Z"]].to_numpy()]
+peaks["contrast"] = np.where(peaks["z"] > 0, "story > math", "math > story")
+peaks = peaks.round(1)
+peaks.to_csv(op.join(glm_dir, "peaks_story_minus_math_labelled.csv"), index=False)
+peaks = peaks[peaks["z"].abs() >= 7]                                    # the strongest peaks, for the report
+print(peaks[["contrast", "X", "Y", "Z", "z", "anatomy (Harvard-Oxford)", "network (Yeo)"]].to_string(index=False))
+
+# %%
+# Figure: Yeo networks on the same axial slices as the contrast, and the network coverage
+from matplotlib.colors import ListedColormap as _ListedColormap
+
+net_index = np.zeros(yeo_net.shape)
+for k, net in enumerate(NETWORK_COLORS, start=1):
+    net_index[yeo_net == net] = k
+net_img = nib.Nifti1Image(net_index, z_img.affine)
+yeo_cmap = _ListedColormap(list(NETWORK_COLORS.values()))
+
+fig = plt.figure(figsize=(14, 10))
+ax_net = fig.add_axes([0, 0.70, 1, 0.28])
+ax_map = fig.add_axes([0, 0.40, 1, 0.28])
+ax_bar = fig.add_axes([0.25, 0.03, 0.6, 0.32])
+display = plotting.plot_roi(net_img, bg_img=anat_mni, display_mode="z", cut_coords=Z_CUTS, axes=ax_net,
+                            cmap=yeo_cmap, vmin=0.5, vmax=7.5, alpha=0.8, black_bg=False, draw_cross=False,
+                            colorbar=False)
+display.title("Yeo et al. (2011), 7 resting-state networks", size=9, color="black", bgcolor="white")
+display = plot_map(z_sm_thr, thr_sm, f"story - math, FDR q < {FDR_ALPHA}, |z| > {thr_sm:.2f}", ax_map)
+
+nt = network_table.iloc[:-1][::-1]                                      # Yeo networks, first one on top
+ypos = np.arange(len(nt))
+ax_bar.barh(ypos, nt["coverage story>math (%)"], color="#b3302f", height=0.7, label="story > math")
+ax_bar.barh(ypos, -nt["coverage math>story (%)"], color="#184f95", height=0.7, label="math > story")
+for y, (s, m) in enumerate(zip(nt["coverage story>math (%)"], nt["coverage math>story (%)"])):
+    ax_bar.text(s + 1, y, f"{s:.0f}%", va="center", fontsize=8, color="#333333")
+    ax_bar.text(-m - 1, y, f"{m:.0f}%", va="center", ha="right", fontsize=8, color="#333333")
+ax_bar.set_yticks(ypos, nt["network"], fontsize=9)
+ax_bar.set_xlim(-70, 70)
+ax_bar.scatter(np.full(len(nt), -67), ypos, marker="s", s=70,                     # network colour, as in the atlas
+               c=[NETWORK_COLORS[n] for n in nt["network"]])
+ax_bar.axvline(0, color="#333333", lw=0.8)
+ax_bar.set_xticks(range(-60, 61, 20), [f"{abs(v)}" for v in range(-60, 61, 20)])
+ax_bar.set_xlabel("% of the network's voxels (FDR map)")
+ax_bar.set_title("Network coverage of the story - math contrast", fontsize=10)
+ax_bar.legend(loc="lower right", frameon=False, fontsize=8)
+ax_bar.spines[["top", "right"]].set_visible(False)
+fig.savefig(op.join(fig_dir, "7e_networks.png"), dpi=FIG_DPI, bbox_inches="tight")
+plt.show()
+
+# %% [markdown]
+# ## 3f. Semantic language regions
+#
+# Binder et al. (2011), the study this task comes from, designed the story vs math contrast to map the **anterior
+# temporal lobe (ATL)**, which most language localisers miss. Together with the semantic network of the
+# meta-analysis by Binder et al. (2009), the regions expected for story > math are, mostly left-lateralised:
+# - ATL: temporal pole, anterior superior / middle temporal gyrus (STS), and the **ventral ATL** (anterior
+#   inferior temporal and fusiform gyri, anterior parahippocampal gyrus);
+# - posterior middle temporal gyrus and angular gyrus;
+# - inferior frontal gyrus (pars triangularis / orbitalis), dorsomedial and ventromedial prefrontal cortex;
+# - posterior cingulate / precuneus.
+#
+# For each region (Harvard-Oxford, split into left and right) we report the % of its voxels where story > math
+# (FDR map), the peak z, and two data-quality measures that tell whether the region could be detected at all:
+# the % of the region inside the functional brain mask, and the temporal SNR (mean / std over time) of the
+# motion-corrected, unsmoothed run.
+
+# %%
+BINDER_ROIS = {                                       # Harvard-Oxford cortical label -> short name
+    "Temporal Pole": "temporal pole",
+    "Superior Temporal Gyrus, anterior division": "ant. STG",
+    "Middle Temporal Gyrus, anterior division": "ant. MTG",
+    "Inferior Temporal Gyrus, anterior division": "ant. ITG (ventral ATL)",
+    "Temporal Fusiform Cortex, anterior division": "ant. fusiform (ventral ATL)",
+    "Parahippocampal Gyrus, anterior division": "ant. parahippocampal (ventral ATL)",
+    "Middle Temporal Gyrus, posterior division": "post. MTG",
+    "Angular Gyrus": "angular gyrus",
+    "Inferior Frontal Gyrus, pars triangularis": "IFG triangularis",
+    "Frontal Orbital Cortex": "orbitofrontal / IFG orbitalis",
+    "Superior Frontal Gyrus": "dorsomedial PFC (SFG)",
+    "Frontal Medial Cortex": "ventromedial PFC",
+    "Cingulate Gyrus, posterior division": "posterior cingulate",
+}
+
+# Temporal SNR of the motion-corrected run before smoothing (part 1-2)
+func_mc_brain = op.join(func_dir, "func_mc_brain.nii.gz")
+mc_data = nib.load(func_mc_brain).get_fdata(dtype=np.float32)
+mc_mean, mc_std = mc_data.mean(axis=3), mc_data.std(axis=3)
+tsnr = np.divide(mc_mean, mc_std, out=np.zeros_like(mc_mean), where=mc_std > 0)
+del mc_data
+mni_brain_mask = datasets.load_mni152_brain_mask(resolution=2)            # whole-brain reference (MNI)
+mni_brain = np.squeeze(image.resample_to_img(mni_brain_mask, z_img, interpolation="nearest").get_fdata()) > 0
+tsnr_brain = np.median(tsnr[mask_data])
+
+x_mm = z_img.affine[0, 0] * np.arange(z_img.shape[0]) + z_img.affine[0, 3]   # MNI x of each voxel column
+left = np.broadcast_to(x_mm[:, None, None] < 0, z_img.shape[:3])
+
+rows = []
+for ho_label, short in BINDER_ROIS.items():
+    roi_all = ho_cort_data == ho_cort.labels.index(ho_label)
+    for side, hemi in (("L", left), ("R", ~left)):
+        roi = roi_all & hemi & mni_brain
+        roi_in = roi & mask_data
+        rows.append({"region": short, "side": side,
+                     "in func. mask (%)": 100 * roi_in.sum() / roi.sum(),
+                     "median tSNR": np.median(tsnr[roi_in]) if roi_in.any() else 0,
+                     "story>math (%)": 100 * (story_vox & roi).sum() / roi.sum(),
+                     "math>story (%)": 100 * (math_vox & roi).sum() / roi.sum(),
+                     "peak z": z_data[roi_in].max() if roi_in.any() else np.nan})
+binder_table = pd.DataFrame(rows).round(1)
+binder_table.to_csv(op.join(glm_dir, "binder_regions_story_minus_math.csv"), index=False)
+print(f"Median tSNR of the brain: {tsnr_brain:.1f}")
+print(binder_table.to_string(index=False))
+
+# %%
+# Figure: coronal slices through the ATL (contrast and tSNR), and the expected regions
+Y_CUTS = [20, 10, 0, -10, -20, -40, -60]                                 # temporal pole -> angular gyrus
+tsnr_img = nib.Nifti1Image(np.where(mask_data, tsnr, 0), z_img.affine)
+
+fig = plt.figure(figsize=(14, 12))
+ax_c = fig.add_axes([0, 0.78, 1, 0.21])
+ax_t = fig.add_axes([0, 0.56, 1, 0.21])
+ax_r = fig.add_axes([0.22, 0.03, 0.36, 0.48])
+ax_s = fig.add_axes([0.62, 0.03, 0.2, 0.48])
+display = plotting.plot_stat_map(z_sm_thr, bg_img=anat_mni, display_mode="y", cut_coords=Y_CUTS, axes=ax_c,
+                                 threshold=thr_sm, vmax=Z_VMAX, cmap="RdBu_r", black_bg=False, draw_cross=False)
+display.title(f"story - math, FDR q < {FDR_ALPHA}, coronal slices from the temporal pole (y = 20) to the angular gyrus",
+              size=9, color="black", bgcolor="white")
+display = plotting.plot_stat_map(tsnr_img, bg_img=anat_mni, display_mode="y", cut_coords=Y_CUTS, axes=ax_t,
+                                 cmap="viridis", vmin=0, vmax=60, threshold=0.1, symmetric_cbar=False,
+                                 black_bg=False, draw_cross=False)
+display.title("temporal SNR of the motion-corrected run (before smoothing)", size=9, color="black", bgcolor="white")
+
+regions = list(BINDER_ROIS.values())[::-1]
+ypos = np.arange(len(regions))
+bt = binder_table.set_index(["region", "side"])
+L_COLOR, R_COLOR = "#b3302f", "#e8a39c"                                  # left darker: the expected dominant side
+for side, color, dy in (("L", L_COLOR, 0.18), ("R", R_COLOR, -0.18)):
+    ax_r.barh(ypos + dy, [bt.loc[(r, side), "story>math (%)"] for r in regions], height=0.36, color=color,
+              label=f"{side} hemisphere")
+    ax_s.scatter([bt.loc[(r, side), "median tSNR"] for r in regions], ypos + dy, color=color, s=40, zorder=3)
+ax_r.set_yticks(ypos, regions, fontsize=9)
+ax_r.set_xlim(0, 100)
+ax_r.set_xlabel("% of the region's voxels with story > math (FDR)")
+ax_r.legend(loc="lower right", frameon=False, fontsize=8)
+ax_s.axvline(tsnr_brain, color="#333333", ls="--", lw=1)
+ax_s.text(tsnr_brain + 1, len(regions) - 0.4, "brain\nmedian", fontsize=8, color="#333333", va="top")
+ax_s.set_yticks(ypos, [])
+ax_s.set_xlim(0, 60)
+ax_s.set_xlabel("median tSNR")
+for ax in (ax_r, ax_s):
+    ax.set_ylim(-0.6, len(regions) - 0.4)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(axis="x", color="0.9")
+    ax.set_axisbelow(True)
+ax_r.set_title("Semantic regions expected from Binder et al. (2009, 2011)", fontsize=10, loc="left")
+fig.savefig(op.join(fig_dir, "7f_semantic_regions.png"), dpi=FIG_DPI, bbox_inches="tight")
+plt.show()
+
+# %% [markdown]
+# ### Comments on 3e
+#
+# (`7e_networks.png`, `networks_story_minus_math.csv`, `peaks_story_minus_math_labelled.csv`)
+#
+# **Math > story (numerical processing): dorsal attention and frontoparietal control networks.** These two
+# networks hold 57% of the math > story voxels, and a third of each network is more active during math (33% and
+# 35% coverage, mean z -1.3 and -1.4). The peaks are in the bilateral intraparietal sulcus / posterior
+# supramarginal gyrus ((40, -40, 38), (-52, -46, 56)), the superior parietal lobule, the right middle frontal
+# gyrus and frontal eye field region ((36, 6, 64)) and the dorsolateral prefrontal cortex ((42, 42, 22),
+# (-48, 30, 36)). The intraparietal sulcus holds the representation of numerical quantity, and the frontoparietal
+# network supports the working memory and the step-by-step control of mental arithmetic. The posterior
+# cerebellum and the inferior occipito-temporal cortex are also more active during math.
+#
+# **Story > math (semantic processing): default mode network first.** It holds 38% of the story > math voxels,
+# and 46% of the network is more active during the stories (mean z 2.3). Peaks: medial prefrontal cortex /
+# frontal pole ((-4, 60, 28), (0, 56, -8)), posterior cingulate / precuneus ((-2, -42, 34)), angular gyrus /
+# lateral parietal, and the lateral temporal cortex from the temporal pole to the posterior STS
+# ((-54, -4, -10), (60, -4, -14), (-64, -40, 4)). This is the overlap between the default mode network and the
+# semantic network (Binder et al., 2009): comprehension of a narrative uses the same regions as internally
+# directed, memory-based thinking, whereas the effortful math task deactivates them.
+# Three other networks are more active during the stories:
+# - **limbic** (27% coverage): temporal poles and orbitofrontal cortex, i.e. the ATL (see 3f);
+# - **somatomotor** (33%): in Yeo's 7-network atlas this network includes the auditory cortex and the
+#   superior temporal plane. Listening to a continuous story is a richer auditory and speech input than the
+#   short math problems; the medial premotor peaks may also reflect speech-related motor activity;
+# - **visual** (29%), on the lateral and dorsal occipital cortex and the cuneus: there is no visual stimulus in
+#   either task, so this is either visual imagery during the narrative, or a stronger deactivation of the
+#   visual cortex during math (the single-condition maps cannot tell, 3c).
+#
+# The ventral attention / salience network is split (10% story > math, 14% math > story).
+# Caveat: the atlas is defined at the group level and our data are a single subject, so the overlap is
+# approximate; the networks are counted after a 4 mm dilation of the atlas (see above).
+
+# %% [markdown]
+# ### Comments on 3f
+#
+# (`7f_semantic_regions.png`, `binder_regions_story_minus_math.csv`)
+#
+# **The expected semantic regions are present in the story > math map**, in both hemispheres:
+# - lateral ATL: anterior STG (L 99.6% of voxels, peak z 10.2), anterior MTG (L 93%), temporal pole (L 64%,
+#   R 56%). This is the main finding of Binder et al. (2011);
+# - posterior MTG, left angular gyrus, left IFG pars triangularis (53%), ventromedial PFC (64-71%),
+#   dorsomedial PFC and posterior cingulate.
+# The left side dominates in most regions (angular gyrus, IFG, posterior cingulate, fusiform), as expected for
+# language, but the ATL activation is strongly bilateral, also in agreement with Binder et al. (2011). The right
+# angular gyrus is more active during math (39% math > story): the Harvard-Oxford angular gyrus extends into the
+# intraparietal sulcus.
+#
+# **The ventral ATL is the weak spot**: only 12-34% of the anterior inferior temporal, fusiform and
+# parahippocampal gyri pass the threshold, against > 70% for the lateral ATL, with lower peak z (4.1-6.6).
+# Two reasons can explain it:
+# 1. **Susceptibility artefacts.** The ventral ATL lies just above the air-filled sinuses and ear canals. The
+#    magnetic field inhomogeneity there causes signal dropout and distortion in gradient-echo EPI. The data show
+#    it: the median tSNR is 14-26 in the ventral ATL and 10-21 in the orbitofrontal cortex, against 33 for the brain
+#    and 53 in the angular gyrus, and part of these regions is outside the functional mask (82% of the left
+#    anterior fusiform is inside). Lower tSNR means lower z for the same effect. This is precisely why Binder et
+#    al. (2011) needed an optimised acquisition to map the ventral ATL. (HCP corrects the distortion with field
+#    maps, but cannot recover the lost signal.)
+# 2. **The contrast removes what is shared.** Math problems are also spoken sentences that must be understood
+#    and answered, so the story - math subtraction cancels the shared auditory, phonological and syntactic
+#    processing, and part of the semantic processing (number words have meaning). Regions that are engaged by
+#    both tasks, even if they are semantic, are reduced in the contrast.
+#
+# Other factors: a single subject and a single 3.75-min run (low power; the second run of HCP would help); the
+# 6 mm smoothing, which mixes the thin ventral ATL cortex with the low-signal voxels next to it; and the
+# group-level atlas boundaries, which do not match this subject's anatomy exactly.
