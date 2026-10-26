@@ -72,10 +72,9 @@ for path in (func_img_path, func_mask, events_path, anat_mni, dm_block_path, dm_
 # grey matter), and with the Euclidean distance these few voxels would dominate the clustering. After the
 # z-score every voxel has the same weight, and the centroids are in units of standard deviation.
 #
-# We do not regress out the drifts and the motion before clustering: we tried it (0.01 Hz high-pass + 6 motion
-# parameters), and the clustering became unstable (agreement between random seeds, adjusted Rand index, 0.26 at
-# K = 10 instead of 0.69). Their influence is checked afterwards in point 3, by correlating the clusters with the
-# drift and motion regressors.
+# We do not regress out the drifts and the motion before clustering: this is tested in section 2 ("preprocessing
+# check"), and it makes the clustering less stable without making it more related to the task. Their influence is
+# checked afterwards in point 3, by correlating the clusters with the drift and motion regressors.
 #
 # **Computation.** K-means with the Euclidean distance (`sklearn.cluster.KMeans`, as in lab 7). Since there are
 # only 313 samples, they span a space of at most 313 dimensions: we run K-means on the SVD coordinates of X
@@ -92,7 +91,6 @@ n_scans, n_voxels = X_raw.shape
 print(f"X: {n_scans} timepoints x {n_voxels} voxels, TR = {t_r:.2f} s")
 
 X = signal.clean(X_raw, detrend=False, standardize="zscore_sample")  # demean (lab 7) + unit variance per voxel
-del X_raw
 
 # Exact low-dimensional coordinates of the timepoints (same pairwise distances as in voxel space)
 U, S, _ = np.linalg.svd(X, full_matrices=False)
@@ -145,6 +143,49 @@ axs[2].text(K + 0.3, 0.05, f"K = {K}", color="#b3302f", fontsize=9)
 fig.tight_layout()
 fig.savefig(op.join(fig_dir, "8a_choice_of_K.png"), dpi=FIG_DPI)
 plt.show()
+
+# %% [markdown]
+# ### Preprocessing check: removing the drifts and the motion before clustering?
+#
+# At K = 10, the clustering is repeated on the data cleaned in four ways (each voxel is always z-scored):
+# 1. nothing removed (the version used);
+# 2. 0.01 Hz high-pass filter (same cut-off as the GLM);
+# 3. the 4 cosine drift regressors of the GLM regressed out;
+# 4. the drifts and the 6 motion parameters regressed out.
+#
+# For each version: stability across 5 seeds (adjusted Rand index), fraction of consecutive timepoints in the same
+# cluster (temporal contiguity), largest |correlation| of a binary cluster time course with `story` and `math`,
+# number of clusters with |r| > 0.3 with one of them, and mean (over clusters) of the largest |r| with a drift.
+
+# %%
+dm_block = pd.read_csv(dm_block_path, index_col=0)
+drifts = dm_block[[c for c in dm_block.columns if c.startswith("drift")]].to_numpy()
+motion = dm_block[["rot_x", "rot_y", "rot_z", "trans_x", "trans_y", "trans_z"]].to_numpy()
+cleaning = {"nothing removed (used)": {},
+            "high-pass 0.01 Hz": {"t_r": t_r, "high_pass": 0.01},
+            "cosine drifts": {"confounds": drifts},
+            "cosine drifts + motion": {"confounds": np.column_stack([drifts, motion])}}
+
+rows = []
+for name, kwargs in cleaning.items():
+    Y = signal.clean(X_raw, detrend=False, standardize="zscore_sample", **kwargs)
+    U_y, S_y, _ = np.linalg.svd(Y, full_matrices=False)
+    Y_red = U_y * S_y
+    lab = KMeans(n_clusters=K, random_state=0, n_init=200).fit(Y_red).labels_
+    ari = [adjusted_rand_score(lab, KMeans(n_clusters=K, random_state=s, n_init=N_INIT).fit(Y_red).labels_)
+           for s in range(1, 6)]
+    onehot = np.array([(lab == c).astype(float) for c in range(K)])
+    r_task = np.array([[np.corrcoef(b, dm_block[t])[0, 1] for t in ("story", "math")] for b in onehot])
+    r_drift = np.array([[abs(np.corrcoef(b, d)[0, 1]) for d in drifts.T] for b in onehot])
+    rows.append({"cleaning": name, "stability (ARI)": np.mean(ari), "contiguity": np.mean(lab[1:] == lab[:-1]),
+                 "max |r| story": np.abs(r_task[:, 0]).max(), "max |r| math": np.abs(r_task[:, 1]).max(),
+                 "clusters |r task| > 0.3": int((np.abs(r_task).max(axis=1) > 0.3).sum()),
+                 "mean max |r drift|": r_drift.max(axis=1).mean()})
+    del Y, Y_red
+cleaning_table = pd.DataFrame(rows)
+cleaning_table.to_csv(op.join(km_dir, f"preprocessing_check_K{K}.csv"), index=False)
+print(cleaning_table.round(2).to_string(index=False))
+del X_raw
 
 # %%
 # Final clustering, with many initialisations to get the best solution
@@ -312,7 +353,7 @@ plt.show()
 # reproducible, and it provides the 10 clusters analysed in point 3. K ≤ 5 is more stable but too coarse: it
 # merges the task states with the slow fluctuations described below.
 #
-# **Preprocessing check.** Removing the slow drifts (0.01 Hz high-pass, or the 4 cosine drifts of the GLM) and
+# **Preprocessing check** (table above, `preprocessing_check_K10.csv`). Removing the slow drifts (0.01 Hz high-pass, or the 4 cosine drifts of the GLM) and
 # the motion before clustering was tested at K = 10: it does not make the clusters more related to the task (max
 # |r| with story 0.30-0.45 vs 0.43; fewer clusters with |r| > 0.3 with a task regressor) and it reduces the
 # stability (adjusted Rand index 0.26-0.42 vs 0.70). We therefore keep the z-scored data and check the nuisance
