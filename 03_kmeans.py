@@ -4,7 +4,7 @@
 #
 # This file can be run as a script (`python 03_kmeans.py`) or cell by cell (`# %%`) in VS Code.
 #
-# Inputs (run `Project_notebook.ipynb` and `02_glm.py` first):
+# Inputs (run `Project_notebook.ipynb` and `02_glm.ipynb` first):
 # - part 1-2: `func_mc_brain_smooth6mm.nii.gz` (313 volumes) and the functional brain mask;
 # - part 1-3: the design matrices (`design_matrix_block.csv`, `design_matrix_event.csv`), the story - math
 #   z-map and the Yeo atlas.
@@ -54,7 +54,7 @@ yeo_path = op.join(out_dir, "atlases", "Yeo2011_7Networks_N1000.split_components
 yeo_lut_path = op.join(out_dir, "atlases", "7Networks_ColorLUT_freeview.txt")
 
 for path in (func_img_path, func_mask, events_path, anat_mni, dm_block_path, dm_event_path, zmap_path, yeo_path):
-    assert op.exists(path), f"{path} not found: run Project_notebook.ipynb and 02_glm.py first"
+    assert op.exists(path), f"{path} not found: run Project_notebook.ipynb and 02_glm.ipynb first"
 
 # %% [markdown]
 # ## 1. Temporal K-means
@@ -222,7 +222,7 @@ from nilearn import image
 z_glm = nib.load(zmap_path).get_fdata()[mask]
 r_glm = np.array([np.corrcoef(centroids[c], z_glm)[0, 1] for c in range(K)])
 
-# Yeo networks (same atlas and 4 mm dilation as in 02_glm.py)
+# Yeo networks (same atlas and 4 mm dilation as in 02_glm.ipynb)
 from scipy import ndimage
 
 NETWORKS = {"Vis": "Visual", "SomMot": "Somatomotor", "DorsAttn": "Dorsal attention",
