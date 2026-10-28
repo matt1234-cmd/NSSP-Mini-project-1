@@ -125,6 +125,7 @@ dm_event.to_csv(op.join(glm_dir, "design_matrix_event.csv"))
 fig, axs = plt.subplots(1, 2, figsize=(11, 6), gridspec_kw={"width_ratios": [dm_block.shape[1], dm_event.shape[1]]})
 plot_design_matrix(dm_block, axes=axs[0])
 axs[0].set_title("Block design (main model)", fontsize=11)
+fig.colorbar(axs[0].images[0], ax=axs[0], shrink=0.7, label="regressor (a.u.)")
 plot_design_matrix(dm_event, axes=axs[1])
 axs[1].set_title("Event design (detailed model)", fontsize=11)
 for ax in axs:
@@ -210,7 +211,7 @@ def plot_corr(corr, ax, title):
     return im
 
 
-fig, axs = plt.subplots(1, 2, figsize=(14, 6.5), gridspec_kw={"width_ratios": [len(corr_block), len(corr_event)]})
+fig, axs = plt.subplots(1, 2, figsize=(16, 6.5), gridspec_kw={"width_ratios": [len(corr_block), len(corr_event)]})
 plot_corr(corr_block, axs[0], "Block design")
 im = plot_corr(corr_event, axs[1], "Event design")
 fig.colorbar(im, ax=axs, shrink=0.7, label="Pearson correlation")
